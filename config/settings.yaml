@@ -1,0 +1,149 @@
+# ============================================================
+# Face Recognition System - Configuration
+# ============================================================
+
+# ── Add as many cameras as you have devices ──────────────────
+# device_index: OS camera index (0, 1, 2 ...)
+# label:        Human-readable name shown on screen and in logs
+cameras:
+  - device_index: 0
+    label: "Entrance"
+    width: 1280
+    height: 720
+    fps: 30
+  # ── USB / built-in cameras ────────────────────────────────────────
+  # - device_index: 1
+  #   label: "Checkout"
+  #   width: 640
+  #   height: 480
+  #   fps: 30
+  # ── IP / RTSP cameras ─────────────────────────────────────────────
+  # Use rtsp_url to connect to IP cameras (Hikvision, Dahua, Reolink, etc.)
+  # rtsp_url overrides device_index when set.
+  # Common formats:
+  #   Hikvision : rtsp://admin:password@192.168.1.100:554/Streaming/Channels/101
+  #   Dahua     : rtsp://admin:password@192.168.1.100:554/cam/realmonitor?channel=1&subtype=0
+  #   Reolink   : rtsp://admin:password@192.168.1.100:554/h264Preview_01_main
+  #   Generic   : rtsp://username:password@ip_address:port/stream_path
+  # - rtsp_url: "rtsp://admin:password@192.168.1.100:554/Streaming/Channels/101"
+  #   label: "Exit"
+  #   width: 1280
+  #   height: 720
+  #   fps: 25
+
+detection:
+  # Backend: OpenCV Haar Cascade (no dlib/CMake required)
+  # frame_skip: 1 = every frame (real-time, good CPU)
+  # frame_skip: 2 = every other frame (lighter CPU)
+  frame_skip: 1
+
+matching:
+  # LBPH distance threshold = 170 * tolerance
+  # ─── Typical live distances ───────────────────────────────────────
+  #   Same person, good lighting   :  30 – 70
+  #   Same person, varied angle    :  60 – 90
+  #   Different person             :  90 – 200+
+  # ─── Calibration guide ───────────────────────────────────────────
+  #   0.40  → threshold  68  — very strict, misses bad angles
+  #   0.55  → threshold  93  — recommended (false positives now stopped by SVM logic)
+  #   0.65  → threshold 110  — lenient, more false positives
+  #   0.85  → threshold 144  — too loose (matches almost anyone)
+  tolerance: 0.55
+
+  # Minimum confidence to show a match label (0.0–1.0)
+  # Confidence = 1 – dist/250  (fixed reference, not tied to threshold)
+  #   dist=50  → 80%    dist=80  → 68%    dist=93  → 63%
+  min_confidence: 0.20
+
+  # Consecutive frames that must agree before an alert fires
+  # Higher = stabler detections, fewer spurious alerts (2–5 recommended)
+  confirm_frames: 3
+
+alerts:
+  cooldown_seconds: 6  # Min seconds between repeated alerts for the same person
+  popup_duration_ms: 5000  # How long the popup stays visible (milliseconds)
+  popup_width: 420
+  popup_height: 200
+
+logging:
+  level: INFO           # DEBUG | INFO | WARNING | ERROR
+  max_bytes: 10485760   # 10 MB per log file before rotation
+  backup_count: 10      # Number of rotated log files to keep
+  log_dir: logs
+  log_file: face_recognition.log
+  match_log_file: matches.log  # Dedicated match-event log
+
+paths:
+  whitelist_dir: known_faces/whitelist   # Green box — allowed / known visitors
+  blacklist_dir: known_faces/blacklist   # Red box  — flagged / banned persons
+  unknown_faces_dir: known_faces/unknown # Face crops of unidentified visitors
+  cache_dir: cache
+  screenshots_dir: screenshots           # Auto-saved face captures on confirmation
+
+display:
+  window_title: "Face Recognition System"
+  show_fps: true
+  show_stats: true      # Show matched count + faces in frame
+  unknown_label: "UNKNOWN"
+  matched_box_color: [0, 255, 0]    # BGR: Green for matched
+  unknown_box_color: [0, 0, 255]    # BGR: Red for unknown
+  box_thickness: 2
+  font_scale: 0.7
+
+deepface:
+  # Recognition model: ArcFace (best accuracy ~99%), Facenet512, VGG-Face
+  model: "ArcFace"
+  # detector_backend used only when building DB from training photos
+  # ('skip' is used at match time — Haar cascade handles live detection)
+  detector_backend: "opencv"
+  distance_metric: "cosine"
+  # Cosine distance threshold: 0.0 = identical, higher = less similar
+  # ArcFace same-person typical range: 0.10 – 0.35
+  # ArcFace different-person: 0.45+
+  # Adjust: lower (0.35) = stricter, higher (0.45) = more lenient
+  threshold: 0.40
+
+# ── Sound alarm ────────────────────────────────────────────────────────
+sound:
+  enabled: true
+  whitelist_beep: true        # Soft beep for whitelist matches too
+
+# ── Email notifications ────────────────────────────────────────────────
+# Sends an HTML email with screenshot attachment on every blacklist alert.
+# Gmail: enable 2FA → create App Password → paste below.
+email:
+  enabled: false              # Set to true and fill credentials to activate
+  smtp_host: "smtp.gmail.com"
+  smtp_port: 587
+  use_tls: true               # true = STARTTLS (Gmail/Outlook), false = SSL
+  username: "your@gmail.com"
+  password: "your-app-password"
+  from_addr: "your@gmail.com"
+  to_addrs:
+    - "security@yourcompany.com"
+    # - "backup@yourcompany.com"
+
+# ── Web dashboard ──────────────────────────────────────────────────────
+# Live browser dashboard: http://localhost:5000
+# Shows real-time events, screenshots, stats, system uptime.
+dashboard:
+  enabled: true
+  host: "0.0.0.0"             # 0.0.0.0 = accessible on local network
+  port: 5000
+
+# ── IC / Identity Card scanner ─────────────────────────────────────────
+# Press 'I' while the app is running to OCR the current camera frame.
+# Extracts Malaysian MyKad / passport numbers and writes to scans/ic_scans.txt.
+ic_scan:
+  enabled: true
+  scans_dir: "scans"
+  scans_log: "scans/ic_scans.txt"
+  tesseract_path: "C:\\Program Files\\Tesseract-OCR\\tesseract.exe"
+
+# ── Daily CSV reports ──────────────────────────────────────────────────
+# Auto-exports previous day's events to reports/report_YYYY-MM-DD.csv
+# Manual export: python main.py --export-csv
+report:
+  enabled: true
+  reports_dir: "reports"
+  export_time: "00:05"        # HH:MM — time to run the nightly export

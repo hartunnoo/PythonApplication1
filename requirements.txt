@@ -1,0 +1,14 @@
+# Core
+deepface>=0.0.90
+tensorflow>=2.16.0
+tf-keras
+opencv-python>=4.8.0
+numpy>=1.24.0
+PyYAML>=6.0.0
+Pillow>=10.0.0
+
+# Web dashboard
+flask>=3.0.0
+
+# IC scanner
+pytesseract>=0.3.10
