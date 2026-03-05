@@ -14,6 +14,27 @@ import argparse
 import os
 import sys
 
+# ── DPI awareness (Windows) ────────────────────────────────────────────────
+# On high-DPI displays (125%+), Windows silently upscales OpenCV windows
+# using blurry nearest-neighbor interpolation.  Declaring DPI awareness
+# tells Windows to hand us native-resolution pixels so text/lines stay
+# crisp on 2K/4K screens.  Must be called before any window creation.
+def _enable_dpi_awareness() -> None:
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        # PROCESS_PER_MONITOR_DPI_AWARE = 2  (best — per-monitor scaling)
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except (AttributeError, OSError):
+        try:
+            # Fallback for older Windows (8.0)
+            ctypes.windll.user32.SetProcessDPIAware()
+        except (AttributeError, OSError):
+            pass
+
+_enable_dpi_awareness()
+
 # Fix tkinter/tcl path for Python installs where the venv doesn't inherit
 # the TCL_LIBRARY / TK_LIBRARY environment variables automatically.
 def _fix_tcl_paths() -> None:

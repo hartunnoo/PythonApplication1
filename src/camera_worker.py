@@ -240,6 +240,10 @@ class CameraWorker(threading.Thread):
                 locs    = self._det_locs
                 results = self._det_results
 
+            # Mild unsharp mask — reduces webcam softness without artifacts
+            blur = cv2.GaussianBlur(frame, (0, 0), 2.0)
+            frame = cv2.addWeighted(frame, 1.3, blur, -0.3, 0)
+
             rendered = self._renderer.render(frame, locs, results)
             self._draw_label(rendered, cfg.label)
             if self._capture_mode:
@@ -734,16 +738,16 @@ class CameraWorker(threading.Thread):
     def _draw_label(self, frame: np.ndarray, label: str) -> None:
         h = frame.shape[0]
         text = f" {label} "
-        (tw, th), bl = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
+        (tw, th), bl = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.65, 1)
         y = h - 10
-        cv2.rectangle(frame, (0, y - th - bl - 4), (tw + 4, h), (25, 25, 35), cv2.FILLED)
+        cv2.rectangle(frame, (0, y - th - bl - 4), (tw + 6, h), (25, 25, 35), cv2.FILLED)
         cv2.putText(frame, text, (4, y - bl),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 1)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 200, 255), 1, cv2.LINE_AA)
 
     def _set_error_frame(self) -> None:
         cfg   = self._cam_cfg
         frame = np.zeros((480, 640, 3), dtype=np.uint8)
         cv2.putText(frame, f"[{cfg.label}] unavailable",
-                    (20, 240), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 200), 2)
+                    (20, 240), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 200), 2, cv2.LINE_AA)
         with self._out_lock:
             self._out_frame = frame

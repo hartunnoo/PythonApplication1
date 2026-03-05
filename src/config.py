@@ -68,10 +68,10 @@ class DisplayConfig:
     show_stats: bool = True
     unknown_label: str = "UNKNOWN VISITOR"
     box_thickness: int = 2
-    font_scale: float = 0.65
-    grid_cell_width: int = 640
-    grid_cell_height: int = 360
-    panel_width: int = 220   # Left scan-info panel width in pixels
+    font_scale: float = 0.70
+    grid_cell_width: int = 960
+    grid_cell_height: int = 540
+    panel_width: int = 280   # Left scan-info panel width in pixels
 
 
 @dataclass

@@ -88,7 +88,8 @@ display:
   matched_box_color: [0, 255, 0]    # BGR: Green for matched
   unknown_box_color: [0, 0, 255]    # BGR: Red for unknown
   box_thickness: 2
-  font_scale: 0.7
+  font_scale: 0.70
+  panel_width: 280      # Left scan-info panel width (px) — wider for sharper text
 
 deepface:
   # Recognition model: ArcFace (best accuracy ~99%), Facenet512, VGG-Face

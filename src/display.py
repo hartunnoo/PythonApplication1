@@ -7,7 +7,7 @@ Box colors:
   BLACKLIST match  → red box + name (semi-transparent red fill)
   UNKNOWN visitor  → green box + "UNKNOWN VISITOR"
 
-Left panel (220 px wide):
+Left panel (280 px wide):
   Camera label, scan status, last result, TRUE/FALSE indicator
 """
 
@@ -32,10 +32,21 @@ COL_BLACKLIST = (  0,   0, 220)   # Red
 COL_UNKNOWN   = ( 30, 200,  80)   # Slightly different green
 COL_WHITE     = (255, 255, 255)
 COL_PANEL_BG  = ( 18,  18,  28)   # Very dark blue-grey
+COL_PANEL_SECTION = (60, 60, 90)  # Section divider lines
+COL_PANEL_SUB     = (50, 50, 70)  # Sub-divider lines
+COL_LABEL_DIM     = (130, 130, 170)  # Dimmed info text
+COL_LABEL_MUTED   = (100, 100, 140)  # Very dim text
+COL_HEADER_DIM    = (90, 90, 120)    # Section header text
 
+_AA         = cv2.LINE_AA          # Anti-aliased line type for sharp text
 _FONT       = cv2.FONT_HERSHEY_DUPLEX
 _FONT_S     = cv2.FONT_HERSHEY_SIMPLEX
+_FONT_T     = cv2.FONT_HERSHEY_TRIPLEX   # Thicker stroked font for headers
 _EYE_CASCADE_PATH = cv2.data.haarcascades + "haarcascade_eye.xml"
+
+# Panel supersampling factor — render text at Nx resolution then downscale
+# for sub-pixel smooth text. 2 = double resolution, 1 = disabled.
+_PANEL_SS = 2
 
 _eye_cascade: Optional[cv2.CascadeClassifier] = None
 
@@ -149,8 +160,11 @@ class FrameRenderer:
 
         if paused:
             h, w = frame.shape[:2]
+            # Shadow + main text for sharp PAUSED overlay
+            cv2.putText(frame, "PAUSED", (w // 2 - 59, h // 2 + 1),
+                        _FONT, 1.4, (0, 0, 0), 3, _AA)
             cv2.putText(frame, "PAUSED", (w // 2 - 60, h // 2),
-                        _FONT, 1.4, (0, 220, 220), 2)
+                        _FONT, 1.4, (0, 220, 220), 2, _AA)
         return frame
 
     # ------------------------------------------------------------------
@@ -158,39 +172,63 @@ class FrameRenderer:
     # ------------------------------------------------------------------
 
     def _draw_panel(self, frame: np.ndarray, panel_w: int) -> None:
+        """Draw the left scan-info panel.
+
+        When _PANEL_SS > 1 we render to a 2× canvas then downscale with
+        INTER_AREA (best for shrinking) → sub-pixel smooth text that looks
+        dramatically sharper than native-resolution LINE_AA alone.
+        """
         h = frame.shape[0]
+        ss = _PANEL_SS  # supersampling factor
+
+        # Create hi-res canvas for the panel region
+        ph, pw = h * ss, panel_w * ss
+        panel = np.full((ph, pw, 3), COL_PANEL_BG, dtype=np.uint8)
+
+        self._render_panel_content(panel, pw, ph, ss)
+
+        # Downscale with INTER_AREA (best for shrink, preserves fine text detail)
+        if ss > 1:
+            panel = cv2.resize(panel, (panel_w, h), interpolation=cv2.INTER_AREA)
+
+        # Blit panel onto frame
+        frame[0:h, 0:panel_w] = panel
+
+        # Right border line — drawn on final frame for pixel-precise alignment
+        cv2.line(frame, (panel_w, 0), (panel_w, h), COL_PANEL_SECTION, 1, _AA)
+
+    def _render_panel_content(self, panel: np.ndarray, pw: int, ph: int, ss: int) -> None:
+        """Render all panel text/shapes at ss× resolution."""
         s = self._scan
 
-        # Dark background
-        cv2.rectangle(frame, (0, 0), (panel_w, h), COL_PANEL_BG, cv2.FILLED)
-        # Right border line
-        cv2.line(frame, (panel_w, 0), (panel_w, h), (60, 60, 80), 1)
-
-        x = 10
-        y = 20
+        # Scale all coordinates and font sizes by ss
+        x = 14 * ss
+        y = 28 * ss
+        line_h = lambda n: int(n * ss)  # helper for vertical spacing
 
         # ── Title ──────────────────────────────────────────────────────
-        cv2.putText(frame, "SCAN STATUS", (x, y), _FONT_S, 0.55, (150, 150, 200), 1)
-        y += 4
-        cv2.line(frame, (x, y), (panel_w - x, y), (60, 60, 90), 1)
-        y += 18
+        cv2.putText(panel, "SCAN STATUS", (x, y),
+                    _FONT_T, 0.60 * ss, (170, 170, 220), max(1, ss), _AA)
+        y += line_h(8)
+        cv2.line(panel, (x, y), (pw - x, y), COL_PANEL_SECTION, max(1, ss), _AA)
+        y += line_h(24)
 
-        # ── FPS ────────────────────────────────────────────────────────
-        cv2.putText(frame, f"FPS: {self._fps.fps:.0f}", (x, y), _FONT_S, 0.48, (100, 100, 140), 1)
-        y += 22
+        # ── FPS + Face count (single row) ─────────────────────────────
+        cv2.putText(panel, f"FPS: {self._fps.fps:.0f}", (x, y),
+                    _FONT_S, 0.52 * ss, COL_LABEL_MUTED, max(1, ss), _AA)
+        cv2.putText(panel, f"Faces: {s.face_count}", (x + 110 * ss, y),
+                    _FONT_S, 0.52 * ss, COL_LABEL_MUTED, max(1, ss), _AA)
+        y += line_h(28)
 
-        # ── Faces in frame ─────────────────────────────────────────────
-        cv2.putText(frame, f"Faces: {s.face_count}", (x, y), _FONT_S, 0.48, (100, 100, 140), 1)
-        y += 26
-
-        cv2.line(frame, (x, y), (panel_w - x, y), (50, 50, 70), 1)
-        y += 16
+        cv2.line(panel, (x, y), (pw - x, y), COL_PANEL_SUB, max(1, ss), _AA)
+        y += line_h(20)
 
         # ── Status ─────────────────────────────────────────────────────
-        cv2.putText(frame, "STATUS", (x, y), _FONT_S, 0.45, (120, 120, 160), 1)
-        y += 18
+        cv2.putText(panel, "STATUS", (x, y),
+                    _FONT_S, 0.50 * ss, (120, 120, 160), max(1, ss), _AA)
+        y += line_h(24)
 
-        pulse_bright = abs(self._pulse - 30) / 30.0   # 0→1→0
+        pulse_bright = abs(self._pulse - 30) / 30.0
         if s.face_count == 0:
             dot_col = tuple(int(c * (0.4 + 0.6 * pulse_bright)) for c in COL_IDLE)
             label   = "IDLE / SCANNING"
@@ -204,52 +242,60 @@ class FrameRenderer:
             dot_col = COL_UNKNOWN
             label   = "UNKNOWN FACE"
 
-        cv2.circle(frame, (x + 6, y - 4), 5, dot_col, cv2.FILLED)
-        cv2.putText(frame, label, (x + 16, y), _FONT_S, 0.42, dot_col, 1)
-        y += 26
+        cv2.circle(panel, (x + 8 * ss, y - 5 * ss), 7 * ss, dot_col, cv2.FILLED, _AA)
+        cv2.putText(panel, label, (x + 22 * ss, y),
+                    _FONT_S, 0.50 * ss, dot_col, max(1, ss), _AA)
+        y += line_h(30)
 
-        cv2.line(frame, (x, y), (panel_w - x, y), (50, 50, 70), 1)
-        y += 16
+        cv2.line(panel, (x, y), (pw - x, y), COL_PANEL_SUB, max(1, ss), _AA)
+        y += line_h(20)
 
         # ── Last result ────────────────────────────────────────────────
-        cv2.putText(frame, "LAST RESULT", (x, y), _FONT_S, 0.45, (120, 120, 160), 1)
-        y += 18
+        cv2.putText(panel, "LAST RESULT", (x, y),
+                    _FONT_S, 0.50 * ss, (120, 120, 160), max(1, ss), _AA)
+        y += line_h(24)
 
         name_col = _box_color(s.last_list)
-        name_display = s.last_name if len(s.last_name) <= 16 else s.last_name[:14] + ".."
-        cv2.putText(frame, name_display, (x, y), _FONT_S, 0.52, name_col, 1)
-        y += 20
+        max_chars = max(18, (pw // ss - 28) // 10)
+        name_display = s.last_name if len(s.last_name) <= max_chars else s.last_name[:max_chars - 2] + ".."
+        cv2.putText(panel, name_display, (x, y),
+                    _FONT, 0.58 * ss, name_col, max(1, ss), _AA)
+        y += line_h(24)
 
         list_label = s.last_list.upper() if s.last_list != LIST_IDLE else "—"
-        cv2.putText(frame, f"List: {list_label}", (x, y), _FONT_S, 0.44, (130, 130, 170), 1)
-        y += 18
+        cv2.putText(panel, f"List: {list_label}", (x, y),
+                    _FONT_S, 0.50 * ss, COL_LABEL_DIM, max(1, ss), _AA)
+        y += line_h(22)
 
         conf_pct = f"{s.last_conf:.0%}" if s.last_conf > 0 else "—"
-        cv2.putText(frame, f"Conf: {conf_pct}", (x, y), _FONT_S, 0.44, (130, 130, 170), 1)
-        y += 18
+        cv2.putText(panel, f"Conf: {conf_pct}", (x, y),
+                    _FONT_S, 0.50 * ss, COL_LABEL_DIM, max(1, ss), _AA)
+        y += line_h(22)
 
-        cv2.putText(frame, f"Time: {s.last_time}", (x, y), _FONT_S, 0.42, (100, 100, 140), 1)
-        y += 18
+        cv2.putText(panel, f"Time: {s.last_time}", (x, y),
+                    _FONT_S, 0.48 * ss, COL_LABEL_MUTED, max(1, ss), _AA)
+        y += line_h(22)
 
         if s.last_emotion:
-            cv2.putText(frame, f"Mood: {s.last_emotion.capitalize()}", (x, y),
-                        _FONT_S, 0.42, (130, 130, 170), 1)
-            y += 18
+            cv2.putText(panel, f"Mood: {s.last_emotion.capitalize()}", (x, y),
+                        _FONT_S, 0.48 * ss, COL_LABEL_DIM, max(1, ss), _AA)
+            y += line_h(22)
 
         if s.last_age is not None:
             age_cat = "Child" if s.last_is_child else "Adult"
-            cv2.putText(frame, f"Age:  ~{s.last_age} ({age_cat})", (x, y),
-                        _FONT_S, 0.42, (130, 130, 170), 1)
-            y += 18
+            cv2.putText(panel, f"Age:  ~{s.last_age} ({age_cat})", (x, y),
+                        _FONT_S, 0.48 * ss, COL_LABEL_DIM, max(1, ss), _AA)
+            y += line_h(22)
 
-        y += 8
+        y += line_h(10)
 
-        cv2.line(frame, (x, y), (panel_w - x, y), (50, 50, 70), 1)
-        y += 16
+        cv2.line(panel, (x, y), (pw - x, y), COL_PANEL_SUB, max(1, ss), _AA)
+        y += line_h(20)
 
         # ── TRUE / FALSE indicator ─────────────────────────────────────
-        cv2.putText(frame, "SCAN RESULT", (x, y), _FONT_S, 0.45, (120, 120, 160), 1)
-        y += 22
+        cv2.putText(panel, "SCAN RESULT", (x, y),
+                    _FONT_S, 0.50 * ss, (120, 120, 160), max(1, ss), _AA)
+        y += line_h(26)
 
         if s.face_count == 0:
             ind_text  = "SCANNING"
@@ -262,36 +308,42 @@ class FrameRenderer:
             ind_color = (100, 100, 120)
 
         # Pill background
-        (tw, th), _ = cv2.getTextSize(ind_text, _FONT, 0.75, 2)
-        pill_x1, pill_y1 = x, y - th - 4
-        pill_x2, pill_y2 = x + tw + 16, y + 6
-        cv2.rectangle(frame, (pill_x1, pill_y1), (pill_x2, pill_y2), ind_color, cv2.FILLED)
-        cv2.putText(frame, ind_text, (x + 8, y), _FONT, 0.75, COL_WHITE, 2)
-        y += 40
+        (tw, th), _ = cv2.getTextSize(ind_text, _FONT, 0.85 * ss, 2 * ss)
+        pill_x1, pill_y1 = x, y - th - 6 * ss
+        pill_x2, pill_y2 = x + tw + 22 * ss, y + 8 * ss
+        cv2.rectangle(panel, (pill_x1, pill_y1), (pill_x2, pill_y2), ind_color, cv2.FILLED)
+        cv2.putText(panel, ind_text, (x + 10 * ss, y),
+                    _FONT, 0.85 * ss, COL_WHITE, 2 * ss, _AA)
+        y += line_h(44)
 
         # ── Legend key ─────────────────────────────────────────────────
-        cv2.line(frame, (x, y), (panel_w - x, y), (50, 50, 70), 1)
-        y += 14
-        cv2.putText(frame, "LEGEND", (x, y), _FONT_S, 0.42, (90, 90, 120), 1)
-        y += 16
+        cv2.line(panel, (x, y), (pw - x, y), COL_PANEL_SUB, max(1, ss), _AA)
+        y += line_h(18)
+        cv2.putText(panel, "LEGEND", (x, y),
+                    _FONT_S, 0.48 * ss, COL_HEADER_DIM, max(1, ss), _AA)
+        y += line_h(20)
 
         for col, txt in [
-            (COL_IDLE,      "IDLE/SCANNING"),
+            (COL_IDLE,      "IDLE / SCANNING"),
             (COL_WHITELIST, "WHITELIST"),
             (COL_UNKNOWN,   "UNKNOWN"),
             (COL_BLACKLIST, "BLACKLIST"),
         ]:
-            cv2.rectangle(frame, (x, y - 8), (x + 10, y + 2), col, cv2.FILLED)
-            cv2.putText(frame, txt, (x + 15, y), _FONT_S, 0.40, (110, 110, 150), 1)
-            y += 16
+            cv2.rectangle(panel, (x, y - 10 * ss), (x + 13 * ss, y + 4 * ss),
+                          col, cv2.FILLED)
+            cv2.putText(panel, txt, (x + 20 * ss, y),
+                        _FONT_S, 0.46 * ss, (120, 120, 160), max(1, ss), _AA)
+            y += line_h(20)
 
         # ── Confidence guide table ──────────────────────────────────────
-        cv2.line(frame, (x, y), (panel_w - x, y), (50, 50, 70), 1)
-        y += 14
-        cv2.putText(frame, "CONFIDENCE GUIDE", (x, y), _FONT_S, 0.42, (90, 90, 120), 1)
-        y += 4
-        cv2.line(frame, (x, y), (panel_w - x, y), (40, 40, 60), 1)
-        y += 14
+        y += line_h(4)
+        cv2.line(panel, (x, y), (pw - x, y), COL_PANEL_SUB, max(1, ss), _AA)
+        y += line_h(18)
+        cv2.putText(panel, "CONFIDENCE GUIDE", (x, y),
+                    _FONT_S, 0.48 * ss, COL_HEADER_DIM, max(1, ss), _AA)
+        y += line_h(6)
+        cv2.line(panel, (x, y), (pw - x, y), (40, 40, 60), max(1, ss), _AA)
+        y += line_h(18)
 
         _CONF_ROWS = [
             ("<  25%",  (80,  80,  95), "No match"),
@@ -301,7 +353,6 @@ class FrameRenderer:
             (">  85%",  ( 0, 220,  55), "Excellent"),
         ]
         for rng, swatch, meaning in _CONF_ROWS:
-            # Highlight current confidence band when a match is active
             highlight = False
             if s.face_count > 0 and s.last_conf > 0:
                 c = s.last_conf
@@ -313,30 +364,37 @@ class FrameRenderer:
                     highlight = True
 
             row_bg = (35, 35, 50) if highlight else COL_PANEL_BG
-            cv2.rectangle(frame, (x - 2, y - 11), (panel_w - x + 2, y + 4),
+            cv2.rectangle(panel, (x - 2 * ss, y - 13 * ss), (pw - x + 2 * ss, y + 6 * ss),
                           row_bg, cv2.FILLED)
 
             # Colour swatch
-            cv2.rectangle(frame, (x, y - 9), (x + 9, y + 2), swatch, cv2.FILLED)
+            cv2.rectangle(panel, (x, y - 11 * ss), (x + 12 * ss, y + 4 * ss),
+                          swatch, cv2.FILLED)
             if highlight:
-                cv2.rectangle(frame, (x, y - 9), (x + 9, y + 2), COL_WHITE, 1)
+                cv2.rectangle(panel, (x, y - 11 * ss), (x + 12 * ss, y + 4 * ss),
+                              COL_WHITE, max(1, ss))
 
-            # Range text
             range_col = COL_WHITE if highlight else (140, 140, 175)
-            cv2.putText(frame, rng, (x + 13, y), _FONT_S, 0.38, range_col, 1)
+            cv2.putText(panel, rng, (x + 18 * ss, y),
+                        _FONT_S, 0.44 * ss, range_col, max(1, ss), _AA)
 
-            # Meaning text
             mean_col = swatch if highlight else (100, 100, 135)
-            cv2.putText(frame, meaning, (x + 58, y), _FONT_S, 0.37, mean_col, 1)
-            y += 15
+            cv2.putText(panel, meaning, (x + 80 * ss, y),
+                        _FONT_S, 0.44 * ss, mean_col, max(1, ss), _AA)
+            y += line_h(19)
 
         # ── Author credit (pinned to bottom of panel) ───────────────────
-        cv2.line(frame, (x, h - 54), (panel_w - x, h - 54), (40, 40, 58), 1)
-        cr_col = (48, 48, 72)
-        cv2.putText(frame, "His Majesty Office",     (x, h - 40), _FONT_S, 0.31, cr_col, 1)
-        cv2.putText(frame, "Istana Nurul Iman",       (x, h - 28), _FONT_S, 0.31, cr_col, 1)
-        cv2.putText(frame, "A.H. Suharddy Bin Mohd Soud", (x, h - 16), _FONT_S, 0.29, cr_col, 1)
-        cv2.putText(frame, "Ketua Server & Security", (x, h -  4), _FONT_S, 0.29, cr_col, 1)
+        cv2.line(panel, (x, ph - 64 * ss), (pw - x, ph - 64 * ss),
+                 (40, 40, 58), max(1, ss), _AA)
+        cr_col = (60, 60, 88)
+        cv2.putText(panel, "His Majesty Office",     (x, ph - 48 * ss),
+                    _FONT_S, 0.38 * ss, cr_col, max(1, ss), _AA)
+        cv2.putText(panel, "Istana Nurul Iman",       (x, ph - 34 * ss),
+                    _FONT_S, 0.38 * ss, cr_col, max(1, ss), _AA)
+        cv2.putText(panel, "A.H. Suharddy Bin Mohd Soud", (x, ph - 20 * ss),
+                    _FONT_S, 0.35 * ss, cr_col, max(1, ss), _AA)
+        cv2.putText(panel, "Ketua Server & Security", (x, ph -  6 * ss),
+                    _FONT_S, 0.35 * ss, cr_col, max(1, ss), _AA)
 
     # ------------------------------------------------------------------
     # Idle border animation
@@ -348,9 +406,12 @@ class FrameRenderer:
         col = (bright, int(bright * 0.5), 10)
         t = 3
         # Border on three sides (right, top, bottom) — left is the panel
-        cv2.rectangle(frame, (panel_w + t, t), (w - t, h - t), col, t)
-        cv2.putText(frame, "SCANNING...", (panel_w + 12, 28),
-                    _FONT_S, 0.65, col, 1)
+        cv2.rectangle(frame, (panel_w + t, t), (w - t, h - t), col, t, _AA)
+        # Shadow then text for readability
+        cv2.putText(frame, "SCANNING...", (panel_w + 13, 31),
+                    _FONT_S, 0.70, (0, 0, 0), 2, _AA)
+        cv2.putText(frame, "SCANNING...", (panel_w + 12, 30),
+                    _FONT_S, 0.70, col, 1, _AA)
 
     # ------------------------------------------------------------------
     # Face box rendering
@@ -373,17 +434,17 @@ class FrameRenderer:
             cv2.rectangle(overlay, (left, top), (right, bottom), (0, 0, 160), cv2.FILLED)
             cv2.addWeighted(overlay, 0.20, frame, 0.80, 0, frame)
 
-        # Main box
-        cv2.rectangle(frame, (left, top), (right, bottom), colour, thick)
+        # Main box — anti-aliased edges
+        cv2.rectangle(frame, (left, top), (right, bottom), colour, thick, _AA)
 
         # Corner accents
-        clen = max(10, (right - left) // 6)
+        clen = max(12, (right - left) // 5)
         for px, py, dx, dy in [
             (left, top, 1, 1), (right, top, -1, 1),
             (left, bottom, 1, -1), (right, bottom, -1, -1),
         ]:
-            cv2.line(frame, (px, py), (px + dx * clen, py), colour, thick + 1)
-            cv2.line(frame, (px, py), (px, py + dy * clen), colour, thick + 1)
+            cv2.line(frame, (px, py), (px + dx * clen, py), colour, thick + 1, _AA)
+            cv2.line(frame, (px, py), (px, py + dy * clen), colour, thick + 1, _AA)
 
         # Label badge
         if result.list_type == LIST_BLACKLIST:
@@ -396,16 +457,20 @@ class FrameRenderer:
         conf_str = f" {result.confidence:.0%}" if result.is_match else ""
         full_label = f" {label}{conf_str} "
 
-        (tw, th), bl = cv2.getTextSize(full_label, _FONT, cfg.font_scale, 1)
-        label_top = max(bottom, th + 4)
+        fs = cfg.font_scale
+        (tw, th), bl = cv2.getTextSize(full_label, _FONT, fs, 1)
+        label_top = max(bottom + 2, th + 4)
         cv2.rectangle(
             frame,
             (left, label_top - th - bl - 4),
-            (left + tw, label_top + 2),
+            (left + tw + 2, label_top + 3),
             colour, cv2.FILLED,
         )
+        # Text shadow for crispness
+        cv2.putText(frame, full_label, (left + 1, label_top - bl - 1),
+                    _FONT, fs, (0, 0, 0), 2, _AA)
         cv2.putText(frame, full_label, (left, label_top - bl - 2),
-                    _FONT, cfg.font_scale, COL_WHITE, 1)
+                    _FONT, fs, COL_WHITE, 1, _AA)
 
         # Attribute line: emotion | age | adult/child
         attr_parts = []
@@ -416,17 +481,17 @@ class FrameRenderer:
             attr_parts.append(f"{result.age}y / {age_cat}")
         if attr_parts:
             attr_label = f"  {' | '.join(attr_parts)}  "
-            attr_scale = cfg.font_scale * 0.78
+            attr_scale = fs * 0.80
             (atw, ath), abl = cv2.getTextSize(attr_label, _FONT_S, attr_scale, 1)
-            attr_y = label_top + ath + abl + 4
+            attr_y = label_top + ath + abl + 5
             cv2.rectangle(frame,
-                          (left, label_top + 3),
-                          (left + atw, attr_y + 2),
+                          (left, label_top + 4),
+                          (left + atw + 2, attr_y + 3),
                           (30, 30, 45), cv2.FILLED)
             cv2.putText(frame, attr_label, (left, attr_y - abl),
-                        _FONT_S, attr_scale, colour, 1)
+                        _FONT_S, attr_scale, colour, 1, _AA)
 
-        # Eye circles
+        # Eye circles — anti-aliased
         eye_cc = _get_eye_cascade()
         if eye_cc is not None:
             face_gray = cv2.cvtColor(frame[top:bottom, left:right], cv2.COLOR_BGR2GRAY)
@@ -440,8 +505,8 @@ class FrameRenderer:
                 cx = left + ex + ew // 2
                 cy = top  + ey + eh // 2
                 r  = max(ew, eh) // 2
-                cv2.circle(frame, (cx, cy), r, eye_col, 2)
-                cv2.circle(frame, (cx, cy), max(2, r // 4), eye_col, cv2.FILLED)
+                cv2.circle(frame, (cx, cy), r, eye_col, 2, _AA)
+                cv2.circle(frame, (cx, cy), max(2, r // 4), eye_col, cv2.FILLED, _AA)
 
 
 # ---------------------------------------------------------------------------
@@ -465,14 +530,18 @@ def make_grid(
 
     placeholder = np.zeros((cell_h, cell_w, 3), dtype=np.uint8)
     cv2.putText(placeholder, "No signal", (cell_w // 2 - 60, cell_h // 2),
-                _FONT_S, 0.8, (80, 80, 80), 1)
+                _FONT_S, 0.8, (80, 80, 80), 1, _AA)
 
     for idx, frame in enumerate(frames):
         row = idx // cols
         col = idx % cols
         x   = border + col * (cell_w + border)
         y   = border + row * (cell_h + border)
-        cell = cv2.resize(frame if frame is not None else placeholder, (cell_w, cell_h))
+        src = frame if frame is not None else placeholder
+        # Use INTER_AREA for shrinking (preserves detail), INTER_LANCZOS4 for enlarging (sharpest)
+        sh, sw = src.shape[:2]
+        interp = cv2.INTER_AREA if (sw > cell_w or sh > cell_h) else cv2.INTER_LANCZOS4
+        cell = cv2.resize(src, (cell_w, cell_h), interpolation=interp)
         canvas[y : y + cell_h, x : x + cell_w] = cell
 
     return canvas
@@ -484,7 +553,7 @@ def make_grid(
 
 def create_window(title: str) -> None:
     cv2.namedWindow(title, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(title, 1280, 720)
+    cv2.resizeWindow(title, 1920, 1080)
 
 
 def show_frame(title: str, frame: np.ndarray) -> None:

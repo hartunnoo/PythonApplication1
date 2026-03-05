@@ -1040,6 +1040,170 @@ class DashboardServer:
                     log.error("api_person_add_photo error: %s", exc)
                     return jsonify({"status": "error", "message": str(exc)}), 500
 
+            @app.route("/api/check-enrollment-conflict", methods=["POST"])
+            def api_check_enrollment_conflict():
+                """Check if an uploaded face matches any existing enrolled person."""
+                from flask import request as freq
+                from src.face_db import SUPPORTED_EXTENSIONS
+                import io
+                try:
+                    if self._db_manager is None or self._matcher is None:
+                        return jsonify({"status": "error", "message": "System not ready"}), 503
+
+                    if "file" not in freq.files:
+                        return jsonify({"status": "error", "message": "No file field"}), 400
+                    file = freq.files["file"]
+                    if file.filename == "":
+                        return jsonify({"status": "error", "message": "No file selected"}), 400
+
+                    ext = os.path.splitext(file.filename)[1].lower()
+                    if ext not in SUPPORTED_EXTENSIONS:
+                        return jsonify({"status": "error", "message": "Invalid file type"}), 400
+
+                    # Optional: exclude a person name from conflict results (self-check)
+                    exclude_name = freq.form.get("exclude_name", "").strip()
+
+                    # Decode image
+                    img_bytes = file.read()
+                    img = cv2.imdecode(
+                        np.frombuffer(img_bytes, np.uint8), cv2.IMREAD_COLOR
+                    )
+                    if img is None:
+                        return jsonify({"status": "error", "message": "Could not decode image"}), 400
+
+                    # Detect face using Haar cascade
+                    db = self._db_manager.get()
+                    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                    faces = db.detector.detectMultiScale(
+                        gray, scaleFactor=1.1, minNeighbors=5, minSize=(40, 40)
+                    )
+                    if len(faces) == 0:
+                        # Fall back: use entire image as crop
+                        face_crop = img
+                    else:
+                        x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
+                        face_crop = img[y : y + h, x : x + w]
+
+                    # Extract embedding
+                    embedding = self._matcher._extract_embedding(face_crop)
+                    if embedding is None:
+                        return jsonify({"status": "error", "message": "Could not extract face embedding"}), 400
+
+                    # Compare against all enrolled embeddings
+                    threshold = self._matcher.threshold
+                    conflicts = []
+                    seen_names = set()
+
+                    for list_model in (db.whitelist, db.blacklist):
+                        for pe in list_model.embeddings:
+                            if exclude_name and pe.name == exclude_name:
+                                continue
+                            dist = self._matcher._cosine_distance(embedding, pe.embedding)
+                            if dist <= threshold and pe.name not in seen_names:
+                                confidence = max(0.0, 1.0 - (dist / threshold))
+                                conflicts.append({
+                                    "name": pe.name,
+                                    "list_type": list_model.list_type,
+                                    "distance": round(float(dist), 4),
+                                    "confidence_pct": round(float(confidence) * 100, 1),
+                                })
+                                seen_names.add(pe.name)
+
+                    conflicts.sort(key=lambda x: x["distance"])
+
+                    resp = jsonify({
+                        "status": "ok",
+                        "has_conflicts": len(conflicts) > 0,
+                        "conflicts": conflicts,
+                        "threshold": threshold,
+                    })
+                    resp.headers["Access-Control-Allow-Origin"] = "*"
+                    return resp
+                except Exception as exc:
+                    log.error("api_check_enrollment_conflict error: %s", exc)
+                    return jsonify({"status": "error", "message": str(exc)}), 500
+
+            @app.route("/api/person/<name>/upload-photo", methods=["POST"])
+            def api_person_upload_photo(name):
+                from flask import request as freq
+                from src.face_db import SUPPORTED_EXTENSIONS
+                try:
+                    # Validate file field
+                    if "file" not in freq.files:
+                        return jsonify({"status": "error", "message": "No file field in request"}), 400
+                    file = freq.files["file"]
+                    if file.filename == "":
+                        return jsonify({"status": "error", "message": "No file selected"}), 400
+
+                    ext = os.path.splitext(file.filename)[1].lower()
+                    if ext not in SUPPORTED_EXTENSIONS:
+                        return jsonify({"status": "error", "message": f"Invalid file type. Supported: {', '.join(SUPPORTED_EXTENSIONS)}"}), 400
+
+                    list_type = freq.form.get("list_type", "whitelist")
+                    if list_type not in ("whitelist", "blacklist"):
+                        return jsonify({"status": "error", "message": "list_type must be 'whitelist' or 'blacklist'"}), 400
+
+                    # Check if person already exists
+                    person_lt = self._find_person_list_type(name)
+                    is_new = person_lt is None
+                    effective_lt = person_lt if person_lt else list_type
+
+                    # Resolve target directory
+                    target_dir = (
+                        self._paths_cfg.whitelist_dir if effective_lt == "whitelist"
+                        else self._paths_cfg.blacklist_dir
+                    ) if self._paths_cfg else f"known_faces/{effective_lt}"
+
+                    os.makedirs(target_dir, exist_ok=True)
+
+                    # Determine next available filename
+                    safe_name = name.replace(" ", "_")
+                    existing = [
+                        f for f in os.listdir(target_dir)
+                        if os.path.splitext(f)[1].lower() in SUPPORTED_EXTENSIONS
+                    ]
+                    max_n = 0
+                    has_base = False
+                    for ef in existing:
+                        stem = os.path.splitext(ef)[0]
+                        if stem == safe_name:
+                            has_base = True
+                            max_n = max(max_n, 1)
+                        elif stem.startswith(safe_name + "_"):
+                            suffix = stem[len(safe_name) + 1:]
+                            if suffix.isdigit():
+                                max_n = max(max_n, int(suffix))
+
+                    next_n = max_n + 1
+                    if not has_base and max_n == 0:
+                        new_fname = f"{safe_name}{ext}"
+                    else:
+                        new_fname = f"{safe_name}_{next_n}{ext}"
+
+                    dest_path = os.path.join(target_dir, new_fname)
+                    file.save(dest_path)
+                    log.info("Upload-photo: %s → %s/%s (new=%s)", name, effective_lt, new_fname, is_new)
+
+                    # Rebuild embeddings
+                    if self._db_manager and self._paths_cfg:
+                        self._db_manager.reload(
+                            self._paths_cfg.whitelist_dir,
+                            self._paths_cfg.blacklist_dir,
+                            self._paths_cfg.cache_dir,
+                        )
+
+                    resp = jsonify({
+                        "status": "ok",
+                        "saved_as": new_fname,
+                        "is_new": is_new,
+                        "list_type": effective_lt,
+                    })
+                    resp.headers["Access-Control-Allow-Origin"] = "*"
+                    return resp
+                except Exception as exc:
+                    log.error("api_person_upload_photo error: %s", exc)
+                    return jsonify({"status": "error", "message": str(exc)}), 500
+
             @app.route("/api/person/<name>/remove-photo", methods=["POST"])
             def api_person_remove_photo(name):
                 from flask import request as freq
@@ -1167,12 +1331,41 @@ class DashboardServer:
                 photo_urls = [
                     f"/known_faces/{lt}/{f}" for f in fnames
                 ]
+                # Build rich photo details with file metadata
+                photo_details = []
+                for fname in fnames:
+                    fpath = os.path.join(base_dir, fname)
+                    ext = os.path.splitext(fname)[1].lower()
+                    size_bytes = 0
+                    modified_at = ""
+                    size_formatted = ""
+                    try:
+                        st = os.stat(fpath)
+                        size_bytes = st.st_size
+                        modified_at = datetime.fromtimestamp(st.st_mtime).isoformat()
+                        if size_bytes < 1024:
+                            size_formatted = f"{size_bytes} B"
+                        elif size_bytes < 1024 * 1024:
+                            size_formatted = f"{size_bytes / 1024:.1f} KB"
+                        else:
+                            size_formatted = f"{size_bytes / (1024 * 1024):.1f} MB"
+                    except OSError:
+                        pass
+                    photo_details.append({
+                        "url": f"/known_faces/{lt}/{fname}",
+                        "filename": fname,
+                        "extension": ext.lstrip(".").upper(),
+                        "size_bytes": size_bytes,
+                        "size_formatted": size_formatted,
+                        "modified_at": modified_at,
+                    })
                 persons.append({
                     "name": name,
                     "list_type": lt,
                     "photo_count": len(fnames),
                     "photo_url": photo_urls[0] if photo_urls else "",
                     "photos": photo_urls,
+                    "photo_details": photo_details,
                     "detection_count": det_counts.get(name, 0),
                 })
 
